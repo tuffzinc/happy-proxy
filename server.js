@@ -7,8 +7,9 @@ const { URL } = require('url');
 const PORT = process.env.PORT || 8080;
 
 const server = http.createServer((req, res) => {
+    const protocol = req.headers['x-forwarded-proto'] || 'http';
     const host = req.headers.host || `localhost:${PORT}`;
-    const reqUrl = new URL(req.url, `http://${host}`);
+    const reqUrl = new URL(req.url, `${protocol}://${host}`);
     const targetUrlStr = reqUrl.searchParams.get('url');
 
     if (req.method === 'OPTIONS') {
@@ -40,7 +41,6 @@ const server = http.createServer((req, res) => {
     res.end('Resource Not Found');
 });
 
-// Helper to serve local HTML files
 function serveStaticFile(res, filename, contentType) {
     const filePath = path.join(__dirname, filename);
     fs.readFile(filePath, 'utf8', (err, data) => {
@@ -64,9 +64,9 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
             method: req.method,
             headers: {
                 ...req.headers,
-                'host': targetUrl.host,         // Overwrite host to prevent rejections
-                'origin': targetUrl.origin,     // Spoof origin
-                'referer': targetUrl.origin     // Spoof referer
+                'host': targetUrl.host,         
+                'origin': targetUrl.origin,     
+                'referer': targetUrl.origin     
             }
         };
 
@@ -93,8 +93,12 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                     const baseProxyPath = `${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin)}/`;
                     const baseTag = `<base href="${baseProxyPath}">`;
                     
-                    bodyData = bodyData.replace(/href="https?:\/\//gi, `href="${reqUrl.origin}/?url=$&`);
-                    bodyData = bodyData.replace(/src="https?:\/\//gi, `src="${reqUrl.origin}/?url=$&`);
+                    bodyData = bodyData.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (match, p1) => {
+                        return `href="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
+                    });
+                    bodyData = bodyData.replace(/src=["'](https?:\/\/[^"']+)["']/gi, (match, p1) => {
+                        return `src="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
+                    });
                     
                     if (bodyData.includes('<head>')) {
                         bodyData = bodyData.replace('<head>', `<head>\n    ${baseTag}`);
