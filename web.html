@@ -72,13 +72,11 @@
             if (!input) return;
 
             let targetUrl = input;
-            // Prepend https:// if protocol is missing
             if (!/^https?:\/\//i.test(targetUrl)) {
                 targetUrl = 'https://' + targetUrl;
             }
 
-            // Route target through the backend proxy route
-            const proxyEndpoint = window.location.origin + '/proxy?url=' + encodeURIComponent(targetUrl);
+            const proxyEndpoint = window.location.origin + '/?url=' + encodeURIComponent(targetUrl);
             document.getElementById('viewPort').src = proxyEndpoint;
         }
 
