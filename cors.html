@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Happy Proxy (CORS)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #f4f7f6;
+            margin: 0;
+            padding: 30px;
+            color: #333;
+        }
+        .container {
+            max-width: 750px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        h1 { color: #2c3e50; margin-top: 0; }
+        .endpoint-note {
+            background: #eef2f7;
+            padding: 12px;
+            border-left: 4px solid #3498db;
+            font-family: monospace;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            word-break: break-all;
+        }
+        .form-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        input[type="text"] {
+            flex-grow: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 15px;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            background: #3498db;
+            color: white;
+            font-size: 15px;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        button:hover { background: #2980b9; }
+        pre {
+            background: #272822;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            max-height: 400px;
+            font-family: monospace;
+        }
+        .links { margin-top: 20px; font-size: 14px; }
+        a { color: #3498db; text-decoration: none; font-weight: bold; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Happy Proxy (CORS)</h1>
+    <p>Use this page to test raw API requests without hitting Cross-Origin Resource Sharing obstacles.</p>
+    
+    <div class="endpoint-note">
+        <strong>API Base URL:</strong> <span id="proxyUrlExample"></span>/?url=[YOUR_URL]
+    </div>
+
+    <div class="form-group">
+        <input type="text" id="apiInput" placeholder="Enter API URL (e.g., https://api.github.com/users/wasmerio)" value="https://api.github.com/users/wasmerio">
+        <button onclick="testFetch()">Send Request</button>
+    </div>
+
+    <h3>Response Data:</h3>
+    <pre id="output">// Results will appear here...</pre>
+
+    <div class="links">
+        <a href="/">Back</a>
+    </div>
+</div>
+
+<script>
+    document.getElementById('proxyUrlExample').innerText = window.location.origin;
+
+    async function testFetch() {
+        const input = document.getElementById('apiInput').value.trim();
+        const output = document.getElementById('output');
+        if (!input) return;
+
+        output.innerText = "Fetching data...";
+
+        try {
+            const proxyEndpoint = window.location.origin + '/?url=' + encodeURIComponent(input);
+            const response = await fetch(proxyEndpoint);
+            
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const json = await response.json();
+                output.innerText = JSON.stringify(json, null, 2);
+            } else {
+                output.innerText = await response.text();
+            }
+        } catch (err) {
+            output.innerText = "Error requesting resource:\n" + err.message;
+        }
+    }
+</script>
+</body>
+</html>
