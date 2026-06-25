@@ -6,9 +6,11 @@ const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
 
+// haha fuck you spotify
 const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 let lastTargetOrigin = '';
+let lastTargetFolder = ''; 
 
 const server = http.createServer((req, res) => {
     const protocol = req.headers['x-forwarded-proto'] || 'http';
@@ -26,8 +28,14 @@ const server = http.createServer((req, res) => {
         return res.end();
     }
 
-    if (!targetUrlStr && reqUrl.pathname !== '/' && reqUrl.pathname !== '/index.html' && reqUrl.pathname !== '/cors' && reqUrl.pathname !== '/cors.html' && reqUrl.pathname !== '/web' && reqUrl.pathname !== '/web.html' && lastTargetOrigin) {
-        targetUrlStr = lastTargetOrigin + reqUrl.pathname + reqUrl.search;
+    if (!targetUrlStr && reqUrl.pathname !== '/' && reqUrl.pathname !== '/index.html' && reqUrl.pathname !== '/cors' && reqUrl.pathname !== '/cors.html' && reqUrl.pathname !== '/web' && reqUrl.pathname !== '/web.html') {
+        if (reqUrl.pathname.startsWith('/')) {
+            if (lastTargetOrigin) {
+                targetUrlStr = lastTargetOrigin + reqUrl.pathname + reqUrl.search;
+            }
+        } else if (lastTargetFolder) {
+            targetUrlStr = lastTargetFolder + reqUrl.pathname + reqUrl.search;
+        }
     }
 
     if (reqUrl.pathname === '/' || reqUrl.pathname === '/index.html' || (!reqUrl.searchParams.get('url') && targetUrlStr)) {
@@ -65,6 +73,10 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
     try {
         const targetUrl = new URL(targetUrlStr);
         lastTargetOrigin = targetUrl.origin;
+        
+        const pathSegments = targetUrl.pathname.split('/');
+        pathSegments.pop();
+        lastTargetFolder = targetUrl.origin + pathSegments.join('/') + '/';
         
         const proxyOptions = {
             hostname: targetUrl.hostname,
@@ -104,31 +116,41 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
             const contentType = responseHeaders['content-type'] || '';
             const referer = req.headers['referer'] || '';
 
-            if (contentType.includes('text/html') && !referer.includes('/cors')) {
+            if ((contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript') || contentType.includes('text/javascript')) && !referer.includes('/cors')) {
                 let bodyData = '';
                 proxyRes.on('data', chunk => bodyData += chunk);
                 proxyRes.on('end', () => {
                     const baseProxyPath = `${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin)}/`;
                     const baseTag = `<base href="${baseProxyPath}">`;
                     
-                    bodyData = bodyData.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (match, p1) => {
-                        return `href="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
-                    });
-                    bodyData = bodyData.replace(/src=["'](https?:\/\/[^"']+)["']/gi, (match, p1) => {
-                        return `src="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
+                    bodyData = bodyData.replace(/(href|src|action)=["'](https?:\/\/[^"']+)["']/gi, (match, attr, p1) => {
+                        return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
                     });
                     
-                    bodyData = bodyData.replace(/href=["'](\/[^"']+)["']/gi, (match, p1) => {
-                        return `href="${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}"`;
+                    bodyData = bodyData.replace(/(href|src|action)=["'](\/[^"']+)["']/gi, (match, attr, p1) => {
+                        return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}"`;
                     });
-                    bodyData = bodyData.replace(/src=["'](\/[^"']+)["']/gi, (match, p1) => {
-                        return `src="${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}"`;
+
+                    bodyData = bodyData.replace(/(href|src|action)=["'](?!(?:https?:\/\/|\/|#|javascript:))([^"']+)["']/gi, (match, attr, p1) => {
+                        return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(lastTargetFolder + p1)}"`;
+                    });
+
+                    bodyData = bodyData.replace(/url\(['"]?(?!(?:https?:\/\/|\/|data:))([^'")]+)['"]?\)/gi, (match, p1) => {
+                        return `url("${reqUrl.origin}/?url=${encodeURIComponent(lastTargetFolder + p1)}")`;
+                    });
+                    bodyData = bodyData.replace(/url\(['"]?(\/[^'")]+)['"]?\)/gi, (match, p1) => {
+                        return `url("${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}")`;
+                    });
+                    bodyData = bodyData.replace(/url\(['"]?(https?:\/\/[^'")]+)['"]?\)/gi, (match, p1) => {
+                        return `url("${reqUrl.origin}/?url=${encodeURIComponent(p1)}")`;
                     });
                     
-                    if (bodyData.includes('<head>')) {
-                        bodyData = bodyData.replace('<head>', `<head>\n    ${baseTag}`);
-                    } else {
-                        bodyData = baseTag + bodyData;
+                    if (contentType.includes('text/html')) {
+                        if (bodyData.includes('<head>')) {
+                            bodyData = bodyData.replace('<head>', `<head>\n    ${baseTag}`);
+                        } else {
+                            bodyData = baseTag + bodyData;
+                        }
                     }
 
                     res.writeHead(proxyRes.statusCode, responseHeaders);
