@@ -8,11 +8,13 @@ const PORT = process.env.PORT || 8080;
 
 const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+let lastTargetOrigin = '';
+
 const server = http.createServer((req, res) => {
     const protocol = req.headers['x-forwarded-proto'] || 'http';
     const host = req.headers.host || `localhost:${PORT}`;
     const reqUrl = new URL(req.url, `${protocol}://${host}`);
-    const targetUrlStr = reqUrl.searchParams.get('url');
+    let targetUrlStr = reqUrl.searchParams.get('url');
 
     if (req.method === 'OPTIONS') {
         res.writeHead(204, {
@@ -24,7 +26,11 @@ const server = http.createServer((req, res) => {
         return res.end();
     }
 
-    if (reqUrl.pathname === '/' || reqUrl.pathname === '/index.html') {
+    if (!targetUrlStr && reqUrl.pathname !== '/' && reqUrl.pathname !== '/index.html' && reqUrl.pathname !== '/cors' && reqUrl.pathname !== '/cors.html' && reqUrl.pathname !== '/web' && reqUrl.pathname !== '/web.html' && lastTargetOrigin) {
+        targetUrlStr = lastTargetOrigin + reqUrl.pathname + reqUrl.search;
+    }
+
+    if (reqUrl.pathname === '/' || reqUrl.pathname === '/index.html' || (!reqUrl.searchParams.get('url') && targetUrlStr)) {
         if (targetUrlStr) {
             return handleProxyPipeline(req, res, targetUrlStr, reqUrl);
         }
@@ -58,6 +64,7 @@ function serveStaticFile(res, filename, contentType) {
 function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
     try {
         const targetUrl = new URL(targetUrlStr);
+        lastTargetOrigin = targetUrl.origin;
         
         const proxyOptions = {
             hostname: targetUrl.hostname,
@@ -69,7 +76,7 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                 'host': targetUrl.host,         
                 'origin': targetUrl.origin,     
                 'referer': targetUrl.origin,
-                'user-agent': CHROME_USER_AGENT // Forces the backend target to treat the proxy as the newest Chrome
+                'user-agent': CHROME_USER_AGENT 
             }
         };
 
@@ -109,6 +116,13 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                     });
                     bodyData = bodyData.replace(/src=["'](https?:\/\/[^"']+)["']/gi, (match, p1) => {
                         return `src="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
+                    });
+                    
+                    bodyData = bodyData.replace(/href=["'](\/[^"']+)["']/gi, (match, p1) => {
+                        return `href="${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}"`;
+                    });
+                    bodyData = bodyData.replace(/src=["'](\/[^"']+)["']/gi, (match, p1) => {
+                        return `src="${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}"`;
                     });
                     
                     if (bodyData.includes('<head>')) {
