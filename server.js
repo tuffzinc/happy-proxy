@@ -6,6 +6,8 @@ const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
 
+const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
 const server = http.createServer((req, res) => {
     const protocol = req.headers['x-forwarded-proto'] || 'http';
     const host = req.headers.host || `localhost:${PORT}`;
@@ -66,7 +68,8 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                 ...req.headers,
                 'host': targetUrl.host,         
                 'origin': targetUrl.origin,     
-                'referer': targetUrl.origin     
+                'referer': targetUrl.origin,
+                'user-agent': CHROME_USER_AGENT // Forces the backend target to treat the proxy as the newest Chrome
             }
         };
 
@@ -75,13 +78,21 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
         const transport = targetUrl.protocol === 'https:' ? https : http;
 
         const proxyReq = transport.request(proxyOptions, (proxyRes) => {
-            const responseHeaders = { ...proxyRes.headers };
+            let responseHeaders = { ...proxyRes.headers };
             
             responseHeaders['Access-Control-Allow-Origin'] = '*'; 
 
             delete responseHeaders['x-frame-options'];
             delete responseHeaders['content-security-policy'];
             delete responseHeaders['strict-transport-security'];
+
+            if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && responseHeaders['location']) {
+                try {
+                    const absoluteRedirectUrl = new URL(responseHeaders['location'], targetUrl.href).href;
+                    responseHeaders['location'] = `${reqUrl.origin}/?url=${encodeURIComponent(absoluteRedirectUrl)}`;
+                } catch (e) {
+                }
+            }
 
             const contentType = responseHeaders['content-type'] || '';
             const referer = req.headers['referer'] || '';
