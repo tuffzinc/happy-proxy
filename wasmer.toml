@@ -1,0 +1,16 @@
+[package]
+name = "tuffzinc/happy-proxy"
+version = "1.0.0"
+description = "fun web proxy :)"
+
+[[module]]
+name = "server"
+source = "wasmer/winterjs"
+
+[[command]]
+name = "run"
+module = "server"
+runner = "https://webc.org/runner/wasi"
+
+[fs]
+"/" = "."
