@@ -1,99 +1,129 @@
-addEventListener('fetch', (event) => {
-    event.respondWith(handleRequest(event.request));
+const http = require('http');
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+const { URL } = require('url');
+
+const PORT = process.env.PORT || 8080;
+
+const server = http.createServer((req, res) => {
+    const host = req.headers.host || `localhost:${PORT}`;
+    const reqUrl = new URL(req.url, `http://${host}`);
+    const targetUrlStr = reqUrl.searchParams.get('url');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+            'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept, Authorization',
+            'Access-Control-Max-Age': '86400'
+        });
+        return res.end();
+    }
+
+    if (reqUrl.pathname === '/' || reqUrl.pathname === '/index.html') {
+        if (targetUrlStr) {
+            return handleProxyPipeline(req, res, targetUrlStr, reqUrl);
+        }
+        return serveStaticFile(res, 'index.html', 'text/html');
+    }
+
+    if (reqUrl.pathname === '/cors' || reqUrl.pathname === '/cors.html') {
+        return serveStaticFile(res, 'cors.html', 'text/html');
+    }
+
+    if (reqUrl.pathname === '/web' || reqUrl.pathname === '/web.html') {
+        return serveStaticFile(res, 'web.html', 'text/html');
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Resource Not Found');
 });
 
-async function handleRequest(request) {
-    const url = new URL(request.url);
-    const targetUrlStr = url.searchParams.get('url');
-
-    if (url.pathname === '/' || url.pathname === '/index.html') {
-        if (targetUrlStr) {
-            return await handleProxyPipeline(request, url, targetUrlStr);
+// Helper to serve local HTML files
+function serveStaticFile(res, filename, contentType) {
+    const filePath = path.join(__dirname, filename);
+    fs.readFile(filePath, 'utf8', (err, data) => {
+        if (err) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            return res.end(`Error: Unable to locate ${filename}`);
         }
-
-        try {
-            const htmlContent = await Deno.readTextFile('./index.html');
-            return new Response(htmlContent, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-        } catch (err) {
-            return new Response("Error: Unable to locate index.html.", { status: 500 });
-        }
-    }
-
-    if (url.pathname === '/cors' || url.pathname === '/cors.html') {
-        try {
-            const htmlContent = await Deno.readTextFile('./cors.html');
-            return new Response(htmlContent, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-        } catch (err) {
-            return new Response("Error: Unable to locate cors.html.", { status: 500 });
-        }
-    }
-
-    // ROUTE 3: Serve Web Proxy (Unblocker) Interface
-    if (url.pathname === '/web' || url.pathname === '/web.html') {
-        try {
-            const htmlContent = await Deno.readTextFile('./web.html');
-            return new Response(htmlContent, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-        } catch (err) {
-            return new Response("Error: Unable to locate web.html.", { status: 500 });
-        }
-    }
-
-    if (request.method === 'OPTIONS') {
-        return new Response(null, {
-            status: 204,
-            headers: {
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': '*',
-            }
-        });
-    }
-
-    return new Response("Resource Not Found", { status: 404 });
+        res.writeHead(200, { 'Content-Type': `${contentType}; charset=utf-8` });
+        res.end(data);
+    });
 }
 
-async function handleProxyPipeline(request, url, targetUrlStr) {
+function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
     try {
         const targetUrl = new URL(targetUrlStr);
-        const headers = new Headers(request.headers);
-        headers.set('Host', targetUrl.host);
+        
+        const proxyOptions = {
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+            path: targetUrl.pathname + targetUrl.search,
+            method: req.method,
+            headers: {
+                ...req.headers,
+                'host': targetUrl.host,         // Overwrite host to prevent rejections
+                'origin': targetUrl.origin,     // Spoof origin
+                'referer': targetUrl.origin     // Spoof referer
+            }
+        };
 
-        const proxyRequest = new Request(targetUrl, {
-            method: request.method,
-            headers: headers,
-            body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.blob() : null,
-            redirect: 'follow'
+        delete proxyOptions.headers['accept-encoding'];
+
+        const transport = targetUrl.protocol === 'https:' ? https : http;
+
+        const proxyReq = transport.request(proxyOptions, (proxyRes) => {
+            const responseHeaders = { ...proxyRes.headers };
+            
+            responseHeaders['Access-Control-Allow-Origin'] = '*'; 
+
+            delete responseHeaders['x-frame-options'];
+            delete responseHeaders['content-security-policy'];
+            delete responseHeaders['strict-transport-security'];
+
+            const contentType = responseHeaders['content-type'] || '';
+            const referer = req.headers['referer'] || '';
+
+            if (contentType.includes('text/html') && !referer.includes('/cors')) {
+                let bodyData = '';
+                proxyRes.on('data', chunk => bodyData += chunk);
+                proxyRes.on('end', () => {
+                    const baseProxyPath = `${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin)}/`;
+                    const baseTag = `<base href="${baseProxyPath}">`;
+                    
+                    bodyData = bodyData.replace(/href="https?:\/\//gi, `href="${reqUrl.origin}/?url=$&`);
+                    bodyData = bodyData.replace(/src="https?:\/\//gi, `src="${reqUrl.origin}/?url=$&`);
+                    
+                    if (bodyData.includes('<head>')) {
+                        bodyData = bodyData.replace('<head>', `<head>\n    ${baseTag}`);
+                    } else {
+                        bodyData = baseTag + bodyData;
+                    }
+
+                    res.writeHead(proxyRes.statusCode, responseHeaders);
+                    res.end(bodyData);
+                });
+            } else {
+                res.writeHead(proxyRes.statusCode, responseHeaders);
+                proxyRes.pipe(res);
+            }
         });
 
-        const response = await fetch(proxyRequest);
-        const responseHeaders = new Headers(response.headers);
+        proxyReq.on('error', (err) => {
+            res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: "Proxy routing exception", details: err.message }));
+        });
 
-        // ya lil bro allow me w my diddy blud cors
-        responseHeaders.set('Access-Control-Allow-Origin', '*');
-
-        const contentType = response.headers.get('content-type') || '';
-        
-        const referer = request.headers.get('referer') || '';
-        if (contentType.includes('text/html') && !referer.includes('/cors')) {
-            let htmlText = await response.text();
-            
-            const baseProxyPath = `${url.origin}/?url=${encodeURIComponent(targetUrl.origin)}/`;
-            const baseTag = `<base href="${baseProxyPath}">`;
-
-            if (htmlText.includes('<head>')) {
-                htmlText = htmlText.replace('<head>', `<head>\n    ${baseTag}`);
-            } else {
-                htmlText = baseTag + htmlText;
-            }
-            return new Response(htmlText, { status: response.status, headers: responseHeaders });
-        }
-
-        return new Response(response.body, { status: response.status, headers: responseHeaders });
+        req.pipe(proxyReq);
 
     } catch (error) {
-        return new Response(JSON.stringify({ error: "Proxy routing exception", details: error.message }), { 
-            status: 500,
-            headers: { 'Content-Type': 'application/json' }
-        });
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: "Invalid Target URL", details: error.message }));
     }
 }
+
+server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
