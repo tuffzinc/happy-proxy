@@ -1,7 +1,7 @@
 [package]
 name = "tuffzinc/happy-proxy"
 version = "1.0.0"
-description = "fun web proxy :)"
+description = "A split-page CORS proxy and web asset renderer powered by WinterJS."
 
 [[module]]
 name = "server"
