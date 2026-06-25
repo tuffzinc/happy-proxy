@@ -47,16 +47,17 @@
             transition: background 0.2s;
         }
         button:hover { background: #27ae60; }
-        iframe {
+        
+        #viewPortContainer {
             flex-grow: 1;
             border: 1px solid #e2e8f0;
             border-radius: 8px;
             background: white;
             box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
+            overflow: auto;
+            position: relative;
         }
     </style>
-	<script src="https://unpkg.com/@ungap/custom-elements-builtin"></script>
-	<script src="https://niutech.github.io/x-frame-bypass/x-frame-bypass.js" type="module"></script>
 </head>
 <body>
 
@@ -66,10 +67,13 @@
         <button onclick="loadWebsite()">Go</button>
     </div>
 
-    <iframe id="viewPort" src="about:blank"></iframe>
+    <div id="viewPortContainer"></div>
 
     <script>
-        function loadWebsite() {
+        const container = document.getElementById('viewPortContainer');
+        const shadowRoot = container.attachShadow({ mode: 'open' });
+
+        async function loadWebsite() {
             const input = document.getElementById('urlInput').value.trim();
             if (!input) return;
 
@@ -79,7 +83,21 @@
             }
 
             const proxyEndpoint = window.location.origin + '/?url=' + encodeURIComponent(targetUrl);
-            document.getElementById('viewPort').src = proxyEndpoint;
+            
+            try {
+                shadowRoot.innerHTML = '<div style="padding: 20px; font-family: sans-serif; color: #666;">Loading site into shadow pipeline...</div>';
+                
+                const response = await fetch(proxyEndpoint);
+                if (!response.ok) throw new Error('Network response failure');
+                
+                const htmlContent = await response.text();
+                
+                shadowRoot.innerHTML = htmlContent;
+
+
+            } catch (error) {
+                shadowRoot.innerHTML = `<div style="padding: 20px; color: #e74c3c; font-family: sans-serif;">Proxy Viewport Render Error: ${error.message}</div>`;
+            }
         }
 
         document.getElementById('urlInput').addEventListener('keypress', function (e) {
