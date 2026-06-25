@@ -6,7 +6,7 @@ const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
 
-// haha fuck you spotify
+// lil spotify can suck my nuts
 const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 let lastTargetOrigin = '';
@@ -29,12 +29,33 @@ const server = http.createServer((req, res) => {
     }
 
     if (!targetUrlStr && reqUrl.pathname !== '/' && reqUrl.pathname !== '/index.html' && reqUrl.pathname !== '/cors' && reqUrl.pathname !== '/cors.html' && reqUrl.pathname !== '/web' && reqUrl.pathname !== '/web.html') {
+        const referer = req.headers['referer'] || '';
+        let refererFolder = '';
+        let refererOrigin = '';
+
+        if (referer) {
+            try {
+                const refUrl = new URL(referer);
+                const proxyUrlParam = refUrl.searchParams.get('url');
+                if (proxyUrlParam) {
+                    const parsedProxyUrl = new URL(proxyUrlParam);
+                    refererOrigin = parsedProxyUrl.origin;
+                    const segments = parsedProxyUrl.pathname.split('/');
+                    segments.pop();
+                    refererFolder = parsedProxyUrl.origin + segments.join('/') + '/';
+                }
+            } catch (e) {}
+        }
+
+        const activeOrigin = refererOrigin || lastTargetOrigin;
+        const activeFolder = refererFolder || lastTargetFolder;
+
         if (reqUrl.pathname.startsWith('/')) {
-            if (lastTargetOrigin) {
-                targetUrlStr = lastTargetOrigin + reqUrl.pathname + reqUrl.search;
+            if (activeOrigin) {
+                targetUrlStr = activeOrigin + reqUrl.pathname + reqUrl.search;
             }
-        } else if (lastTargetFolder) {
-            targetUrlStr = lastTargetFolder + reqUrl.pathname + reqUrl.search;
+        } else if (activeFolder) {
+            targetUrlStr = activeFolder + reqUrl.pathname + reqUrl.search;
         }
     }
 
@@ -114,12 +135,12 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
             }
 
             const contentType = responseHeaders['content-type'] || '';
-            const referer = req.headers['referer'] || '';
 
-            if ((contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript') || contentType.includes('text/javascript')) && !referer.includes('/cors')) {
-                let bodyData = '';
-                proxyRes.on('data', chunk => bodyData += chunk);
+            if (contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript') || contentType.includes('text/javascript')) {
+                let chunks = [];
+                proxyRes.on('data', chunk => chunks.push(chunk));
                 proxyRes.on('end', () => {
+                    let bodyData = Buffer.concat(chunks).toString('utf8');
                     const baseProxyPath = `${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin)}/`;
                     const baseTag = `<base href="${baseProxyPath}">`;
                     
