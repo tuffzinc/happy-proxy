@@ -6,7 +6,6 @@ const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
 
-// lil spotify can suck my nuts
 const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 let lastTargetOrigin = '';
@@ -136,7 +135,7 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
 
             const contentType = responseHeaders['content-type'] || '';
 
-            if (contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript') || contentType.includes('text/javascript')) {
+            if (contentType.includes('text/html') || contentType.includes('text/css')) {
                 let chunks = [];
                 proxyRes.on('data', chunk => chunks.push(chunk));
                 proxyRes.on('end', () => {
