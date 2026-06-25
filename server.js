@@ -6,16 +6,16 @@ async function handleRequest(request) {
     const url = new URL(request.url);
     const targetUrlStr = url.searchParams.get('url');
 
-    if (url.pathname === '/' || url.pathname === '/web.html') {
+    if (url.pathname === '/' || url.pathname === '/index.html') {
         if (targetUrlStr) {
             return await handleProxyPipeline(request, url, targetUrlStr);
         }
 
         try {
-            const htmlContent = await Deno.readTextFile('./web.html');
+            const htmlContent = await Deno.readTextFile('./index.html');
             return new Response(htmlContent, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
         } catch (err) {
-            return new Response("Error: Unable to locate web.html.", { status: 500 });
+            return new Response("Error: Unable to locate index.html.", { status: 500 });
         }
     }
 
@@ -28,7 +28,16 @@ async function handleRequest(request) {
         }
     }
 
-    // ROUTE 3: Handle Preflight CORS Verification
+    // ROUTE 3: Serve Web Proxy (Unblocker) Interface
+    if (url.pathname === '/web' || url.pathname === '/web.html') {
+        try {
+            const htmlContent = await Deno.readTextFile('./web.html');
+            return new Response(htmlContent, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        } catch (err) {
+            return new Response("Error: Unable to locate web.html.", { status: 500 });
+        }
+    }
+
     if (request.method === 'OPTIONS') {
         return new Response(null, {
             status: 204,
@@ -40,18 +49,9 @@ async function handleRequest(request) {
         });
     }
 
-    // ROUTE 4: Legacy Proxy Data Pipeline Endpoint
-    if (url.pathname === '/proxy') {
-        if (!targetUrlStr) {
-            return new Response(JSON.stringify({ error: "Missing parameter: ?url=" }), { status: 400 });
-        }
-        return await handleProxyPipeline(request, url, targetUrlStr);
-    }
-
     return new Response("Resource Not Found", { status: 404 });
 }
 
-// Shared proxy handler execution logic
 async function handleProxyPipeline(request, url, targetUrlStr) {
     try {
         const targetUrl = new URL(targetUrlStr);
@@ -67,8 +67,8 @@ async function handleProxyPipeline(request, url, targetUrlStr) {
 
         const response = await fetch(proxyRequest);
         const responseHeaders = new Headers(response.headers);
-        
-        // Set universal CORS policy on responses
+
+        // ya lil bro allow me w my diddy blud cors
         responseHeaders.set('Access-Control-Allow-Origin', '*');
 
         const contentType = response.headers.get('content-type') || '';
