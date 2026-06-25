@@ -55,6 +55,8 @@
             box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
         }
     </style>
+	<script src="https://unpkg.com/@ungap/custom-elements-builtin"></script>
+	<script src="https://niutech.github.io/x-frame-bypass/x-frame-bypass.js" type="module"></script>
 </head>
 <body>
 
@@ -80,7 +82,6 @@
             document.getElementById('viewPort').src = proxyEndpoint;
         }
 
-        // Trigger on Enter keypress
         document.getElementById('urlInput').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') loadWebsite();
         });
