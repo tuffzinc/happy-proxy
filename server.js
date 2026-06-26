@@ -5,8 +5,10 @@ const path = require('path');
 const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
-
 const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
 
 let lastTargetOrigin = '';
 let lastTargetFolder = ''; 
@@ -21,13 +23,14 @@ const server = http.createServer((req, res) => {
         res.writeHead(204, {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-            'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept, Authorization',
+            'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cookie',
+            'Access-Control-Allow-Credentials': 'true',
             'Access-Control-Max-Age': '86400'
         });
         return res.end();
     }
 
-    if (!targetUrlStr && reqUrl.pathname !== '/' && reqUrl.pathname !== '/index.html' && reqUrl.pathname !== '/cors' && reqUrl.pathname !== '/cors.html' && reqUrl.pathname !== '/web' && reqUrl.pathname !== '/web.html') {
+    if (!targetUrlStr && !['/', '/index.html', '/cors', '/cors.html', '/web', '/web.html'].includes(reqUrl.pathname)) {
         const referer = req.headers['referer'] || '';
         let refererFolder = '';
         let refererOrigin = '';
@@ -50,28 +53,19 @@ const server = http.createServer((req, res) => {
         const activeFolder = refererFolder || lastTargetFolder;
 
         if (reqUrl.pathname.startsWith('/')) {
-            if (activeOrigin) {
-                targetUrlStr = activeOrigin + reqUrl.pathname + reqUrl.search;
-            }
+            if (activeOrigin) targetUrlStr = activeOrigin + reqUrl.pathname + reqUrl.search;
         } else if (activeFolder) {
             targetUrlStr = activeFolder + reqUrl.pathname + reqUrl.search;
         }
     }
 
     if (reqUrl.pathname === '/' || reqUrl.pathname === '/index.html' || (!reqUrl.searchParams.get('url') && targetUrlStr)) {
-        if (targetUrlStr) {
-            return handleProxyPipeline(req, res, targetUrlStr, reqUrl);
-        }
+        if (targetUrlStr) return handleProxyPipeline(req, res, targetUrlStr, reqUrl);
         return serveStaticFile(res, 'index.html', 'text/html');
     }
 
-    if (reqUrl.pathname === '/cors' || reqUrl.pathname === '/cors.html') {
-        return serveStaticFile(res, 'cors.html', 'text/html');
-    }
-
-    if (reqUrl.pathname === '/web' || reqUrl.pathname === '/web.html') {
-        return serveStaticFile(res, 'web.html', 'text/html');
-    }
+    if (reqUrl.pathname === '/cors' || reqUrl.pathname === '/cors.html') return serveStaticFile(res, 'cors.html', 'text/html');
+    if (reqUrl.pathname === '/web' || reqUrl.pathname === '/web.html') return serveStaticFile(res, 'web.html', 'text/html');
 
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Resource Not Found');
@@ -98,13 +92,21 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
         pathSegments.pop();
         lastTargetFolder = targetUrl.origin + pathSegments.join('/') + '/';
         
+        const isHttps = targetUrl.protocol === 'https:';
+        
+        // 1. OBFUSCATION: Clean up incoming headers to look exactly like a normal browser request
+        const proxyHeaders = { ...req.headers };
+        delete proxyHeaders['host'];
+        delete proxyHeaders['accept-encoding']; // We need uncompressed data to rewrite URLs
+        
         const proxyOptions = {
             hostname: targetUrl.hostname,
-            port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+            port: targetUrl.port || (isHttps ? 443 : 80),
             path: targetUrl.pathname + targetUrl.search,
             method: req.method,
+            agent: isHttps ? httpsAgent : httpAgent,
             headers: {
-                ...req.headers,
+                ...proxyHeaders,
                 'host': targetUrl.host,         
                 'origin': targetUrl.origin,     
                 'referer': targetUrl.origin,
@@ -112,25 +114,30 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
             }
         };
 
-        delete proxyOptions.headers['accept-encoding'];
-
-        const transport = targetUrl.protocol === 'https:' ? https : http;
+        const transport = isHttps ? https : http;
 
         const proxyReq = transport.request(proxyOptions, (proxyRes) => {
             let responseHeaders = { ...proxyRes.headers };
-            
             responseHeaders['Access-Control-Allow-Origin'] = '*'; 
 
             delete responseHeaders['x-frame-options'];
             delete responseHeaders['content-security-policy'];
             delete responseHeaders['strict-transport-security'];
 
+            // 2. COOKIE REWRITING: Strip domains from cookies so the proxy domain accepts them
+            if (responseHeaders['set-cookie']) {
+                let cookies = responseHeaders['set-cookie'];
+                if (!Array.isArray(cookies)) cookies = [cookies];
+                responseHeaders['set-cookie'] = cookies.map(cookie => {
+                    return cookie.replace(/Domain=[^;]+;?\s*/gi, '');
+                });
+            }
+
             if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && responseHeaders['location']) {
                 try {
                     const absoluteRedirectUrl = new URL(responseHeaders['location'], targetUrl.href).href;
                     responseHeaders['location'] = `${reqUrl.origin}/?url=${encodeURIComponent(absoluteRedirectUrl)}`;
-                } catch (e) {
-                }
+                } catch (e) {}
             }
 
             const contentType = responseHeaders['content-type'] || '';
@@ -143,26 +150,33 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                     const baseProxyPath = `${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin)}/`;
                     const baseTag = `<base href="${baseProxyPath}">`;
                     
+                    bodyData = bodyData.replace(/(href|src|action)=["']\/\/([^"']+)["']/gi, (match, attr, p1) => {
+                        return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent('https://' + p1)}"`;
+                    });
+
                     bodyData = bodyData.replace(/(href|src|action)=["'](https?:\/\/[^"']+)["']/gi, (match, attr, p1) => {
                         return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
                     });
                     
-                    bodyData = bodyData.replace(/(href|src|action)=["'](\/[^"']+)["']/gi, (match, attr, p1) => {
+                    bodyData = bodyData.replace(/(href|src|action)=["'](\/[^/"'][^"']*)["']/gi, (match, attr, p1) => {
                         return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}"`;
                     });
 
-                    bodyData = bodyData.replace(/(href|src|action)=["'](?!(?:https?:\/\/|\/|#|javascript:))([^"']+)["']/gi, (match, attr, p1) => {
+                    bodyData = bodyData.replace(/(href|src|action)=["'](?!(?:https?:\/\/|\/|#|javascript:|data:))([^"']+)["']/gi, (match, attr, p1) => {
                         return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(lastTargetFolder + p1)}"`;
                     });
 
-                    bodyData = bodyData.replace(/url\(['"]?(?!(?:https?:\/\/|\/|data:))([^'")]+)['"]?\)/gi, (match, p1) => {
-                        return `url("${reqUrl.origin}/?url=${encodeURIComponent(lastTargetFolder + p1)}")`;
-                    });
-                    bodyData = bodyData.replace(/url\(['"]?(\/[^'")]+)['"]?\)/gi, (match, p1) => {
-                        return `url("${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}")`;
+                    bodyData = bodyData.replace(/url\(['"]?\/\/([^'")]+)['"]?\)/gi, (match, p1) => {
+                        return `url("${reqUrl.origin}/?url=${encodeURIComponent('https://' + p1)}")`;
                     });
                     bodyData = bodyData.replace(/url\(['"]?(https?:\/\/[^'")]+)['"]?\)/gi, (match, p1) => {
                         return `url("${reqUrl.origin}/?url=${encodeURIComponent(p1)}")`;
+                    });
+                    bodyData = bodyData.replace(/url\(['"]?(\/[^/'"][^'")]+)['"]?\)/gi, (match, p1) => {
+                        return `url("${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}")`;
+                    });
+                    bodyData = bodyData.replace(/url\(['"]?(?!(?:https?:\/\/|\/|data:))([^'")]+)['"]?\)/gi, (match, p1) => {
+                        return `url("${reqUrl.origin}/?url=${encodeURIComponent(lastTargetFolder + p1)}")`;
                     });
                     
                     if (contentType.includes('text/html')) {
@@ -182,16 +196,22 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
             }
         });
 
+        // 3. ENHANCED ERROR HANDLING: Prevent crashes if the target server abruptly drops the connection
         proxyReq.on('error', (err) => {
-            res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-            res.end(JSON.stringify({ error: "Proxy routing exception", details: err.message }));
+            if (!res.headersSent) {
+                res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: "Bad Gateway: Target server refused connection", details: err.message }));
+            }
         });
 
+        // 4. METHOD PROXYING: This line automatically pipes POST/PUT request bodies (like login forms) to the target server
         req.pipe(proxyReq);
 
     } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ error: "Invalid Target URL", details: error.message }));
+        if (!res.headersSent) {
+            res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: "Invalid Target URL", details: error.message }));
+        }
     }
 }
 
