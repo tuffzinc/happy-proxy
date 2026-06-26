@@ -47,13 +47,9 @@
             transition: background 0.2s;
         }
         button:hover { background: #27ae60; }
-        .btn-secondary {
-            background: #3498db;
-        }
+        .btn-secondary { background: #3498db; }
         .btn-secondary:hover { background: #2980b9; }
-        .btn-neutral {
-            background: #95a5a6;
-        }
+        .btn-neutral { background: #95a5a6; }
         .btn-neutral:hover { background: #7f8c8d; }
         
         #layoutContainer {
@@ -68,8 +64,9 @@
         }
         #viewPortContainer {
             flex-grow: 1;
-            overflow: auto;
+            overflow-y: auto;
             position: relative;
+            padding: 10px;
         }
         #devToolsPanel {
             height: 250px;
@@ -90,27 +87,10 @@
             align-items: center;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
-        .dt-close {
-            cursor: pointer;
-            color: #e74c3c;
-            font-weight: bold;
-        }
-        .dt-logs {
-            flex-grow: 1;
-            padding: 10px;
-            overflow-y: auto;
-            font-size: 13px;
-            white-space: pre-wrap;
-        }
-        .dt-input-line {
-            display: flex;
-            border-top: 1px solid #333;
-            background: #111;
-        }
-        .dt-prompt {
-            padding: 8px;
-            color: #00ff00;
-        }
+        .dt-close { cursor: pointer; color: #e74c3c; font-weight: bold; }
+        .dt-logs { flex-grow: 1; padding: 10px; overflow-y: auto; font-size: 13px; white-space: pre-wrap; }
+        .dt-input-line { display: flex; border-top: 1px solid #333; background: #111; }
+        .dt-prompt { padding: 8px; color: #00ff00; }
         #dtConsoleInput {
             flex-grow: 1;
             background: transparent;
@@ -127,7 +107,7 @@
 
     <div class="nav-bar">
         <h2 onclick="goHome()">Happy Proxy 🎈</h2>
-        <input type="text" id="urlInput" placeholder="Enter website URL (e.g., https://example.com)" value="https://example.com">
+        <input type="text" id="urlInput" placeholder="Enter website URL (e.g., https://youtube.com)" value="https://youtube.com">
         <button onclick="loadWebsite()">Go</button>
         <button class="btn-neutral" onclick="reloadWebsite()">Reload</button>
         <button class="btn-secondary" onclick="toggleDevTools()">DevTools</button>
@@ -143,20 +123,18 @@
             <div class="dt-logs" id="dtLogs"></div>
             <div class="dt-input-line">
                 <span class="dt-prompt">&gt;</span>
-                <input type="text" id="dtConsoleInput" placeholder="Execute JS">
+                <input type="text" id="dtConsoleInput" placeholder="Execute JS inside shadow DOM scope">
             </div>
         </div>
     </div>
 
     <script>
-        const container = document.getElementById('viewPortContainer');
-        const shadowRoot = container.attachShadow({ mode: 'open' });
+        const viewPortContainer = document.getElementById('viewPortContainer');
+        const shadowRoot = viewPortContainer.attachShadow({ mode: 'open' });
         const dtLogs = document.getElementById('dtLogs');
         const devToolsPanel = document.getElementById('devToolsPanel');
 
-        function goHome() {
-            window.location.href = 'index.html';
-        }
+        function goHome() { window.location.href = 'index.html'; }
 
         function logToConsole(msg, type = 'info') {
             const logRow = document.createElement('div');
@@ -169,12 +147,36 @@
             dtLogs.scrollTop = dtLogs.scrollHeight;
         }
 
-        function hookShadowConsole() {
-            window.addEventListener('error', (e) => {
-                logToConsole(e.message, 'error');
-            });
-        }
-        hookShadowConsole();
+
+        shadowRoot.addEventListener('click', (e) => {
+            const link = e.target.closest('a');
+            if (!link) return;
+
+            const href = link.getAttribute('href');
+            if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            let targetUrl = href;
+
+            if (targetUrl.startsWith(window.location.origin)) {
+                try {
+                    const urlObj = new URL(targetUrl);
+                    const rawUrl = urlObj.searchParams.get('url');
+                    if (rawUrl) targetUrl = rawUrl;
+                } catch(err) {}
+            } else if (targetUrl.startsWith('/')) {
+                try {
+                    const currentInput = document.getElementById('urlInput').value;
+                    const baseOrigin = new URL(currentInput).origin;
+                    targetUrl = baseOrigin + targetUrl;
+                } catch(err) {}
+            }
+
+            document.getElementById('urlInput').value = targetUrl;
+            loadWebsite();
+        }, true);
 
         async function loadWebsite() {
             const input = document.getElementById('urlInput').value.trim();
@@ -187,27 +189,73 @@
 
             const proxyEndpoint = window.location.origin + '/?url=' + encodeURIComponent(targetUrl);
             
+            logToConsole(`Fetching layout payload: ${targetUrl}`);
+
             try {
-                shadowRoot.innerHTML = '<div style="padding: 20px; font-family: sans-serif; color: #666;">Loading site into shadow pipeline...</div>';
-                logToConsole(`Fetching connection stream: ${targetUrl}`);
-                
                 const response = await fetch(proxyEndpoint);
-                if (!response.ok) throw new Error(`Network response failure (Status ${response.status})`);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 
                 const htmlContent = await response.text();
-                shadowRoot.innerHTML = htmlContent;
-                logToConsole(`Successfully rendered source assets inside isolation matrix.`, 'success');
+                logToConsole(`Data channel received (${htmlContent.length} bytes). Processing sandbox isolation layer...`);
 
-                shadowRoot.querySelectorAll('script').forEach(oldScript => {
-                    try {
-                        const newScript = document.createElement('script');
-                        Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
-                        newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-                        shadowRoot.appendChild(newScript);
-                    } catch (err) {
-                        logToConsole(`Script initialization block structural crash: ${err.message}`, 'error');
+                shadowRoot.innerHTML = htmlContent;
+
+
+                const scripts = shadowRoot.querySelectorAll('script');
+                scripts.forEach(script => {
+                    const newScript = document.createElement('script');
+                    const code = script.textContent;
+
+                    if (script.src) {
+                        newScript.src = script.src;
+                        document.body.appendChild(newScript);
+                    } else if (code) {
+                        newScript.textContent = `
+                        (function() {
+                            const sr = document.getElementById('viewPortContainer').shadowRoot;
+                            
+                            const fakeDocument = new Proxy(document, {
+                                get(target, prop) {
+                                    if (prop === 'body') return sr.querySelector('body') || sr;
+                                    if (prop === 'documentElement') return sr.querySelector('html') || sr;
+                                    if (prop === 'getElementById') return (id) => sr.getElementById(id) || target.getElementById(id);
+                                    if (prop === 'querySelector') return (s) => sr.querySelector(s) || target.querySelector(s);
+                                    if (prop === 'querySelectorAll') return (s) => sr.querySelectorAll(s) || target.querySelectorAll(s);
+                                    if (prop === 'getElementsByTagName') return (t) => sr.querySelectorAll(t);
+                                    if (prop === 'getElementsByClassName') return (c) => sr.querySelectorAll('.' + c);
+                                    
+                                    const val = target[prop];
+                                    return typeof val === 'function' ? val.bind(target) : val;
+                                },
+                                set(target, prop, value) {
+                                    if (prop === 'title') { document.title = value; return true; }
+                                    target[prop] = value;
+                                    return true;
+                                }
+                            });
+
+                            const fakeWindow = new Proxy(window, {
+                                get(target, prop) {
+                                    if (prop === 'document') return fakeDocument;
+                                    if (prop === 'globalThis') return fakeWindow;
+                                    const val = target[prop];
+                                    return typeof val === 'function' ? val.bind(target) : val;
+                                }
+                            });
+
+                            try {
+                                const fn = new Function('window', 'document', 'globalThis', ${JSON.stringify(code)});
+                                fn(fakeWindow, fakeDocument, fakeWindow);
+                            } catch(err) {
+                                console.warn("Scoped script runtime warning:", err.message);
+                            }
+                        })();`;
+                        document.body.appendChild(newScript);
+                        newScript.remove();
                     }
                 });
+
+                logToConsole(`Render matrix successfully stabilized within Shadow DOM constraints.`, 'success');
 
             } catch (error) {
                 shadowRoot.innerHTML = `<div style="padding: 20px; color: #e74c3c; font-family: sans-serif;">Proxy Viewport Render Error: ${error.message}</div>`;
@@ -221,11 +269,7 @@
         }
 
         function toggleDevTools() {
-            if (devToolsPanel.style.display === 'flex') {
-                devToolsPanel.style.display = 'none';
-            } else {
-                devToolsPanel.style.display = 'flex';
-            }
+            devToolsPanel.style.display = devToolsPanel.style.display === 'flex' ? 'none' : 'flex';
         }
 
         document.getElementById('urlInput').addEventListener('keypress', function (e) {
