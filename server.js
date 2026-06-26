@@ -7,8 +7,9 @@ const { URL } = require('url');
 const PORT = process.env.PORT || 8080;
 const CHROME_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
+// PERFORMANCE OPTIMIZATION: Persistent keep-alive sockets reduce overhead handshakes significantly
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 150 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 150 });
 
 let lastTargetOrigin = '';
 let lastTargetFolder = ''; 
@@ -94,10 +95,9 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
         
         const isHttps = targetUrl.protocol === 'https:';
         
-        // 1. OBFUSCATION: Clean up incoming headers to look exactly like a normal browser request
         const proxyHeaders = { ...req.headers };
         delete proxyHeaders['host'];
-        delete proxyHeaders['accept-encoding']; // We need uncompressed data to rewrite URLs
+        delete proxyHeaders['accept-encoding']; 
         
         const proxyOptions = {
             hostname: targetUrl.hostname,
@@ -124,13 +124,10 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
             delete responseHeaders['content-security-policy'];
             delete responseHeaders['strict-transport-security'];
 
-            // 2. COOKIE REWRITING: Strip domains from cookies so the proxy domain accepts them
             if (responseHeaders['set-cookie']) {
                 let cookies = responseHeaders['set-cookie'];
                 if (!Array.isArray(cookies)) cookies = [cookies];
-                responseHeaders['set-cookie'] = cookies.map(cookie => {
-                    return cookie.replace(/Domain=[^;]+;?\s*/gi, '');
-                });
+                responseHeaders['set-cookie'] = cookies.map(cookie => cookie.replace(/Domain=[^;]+;?\s*/gi, ''));
             }
 
             if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && responseHeaders['location']) {
@@ -150,6 +147,7 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                     const baseProxyPath = `${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin)}/`;
                     const baseTag = `<base href="${baseProxyPath}">`;
                     
+                    // BUG FIX: Protocol-relative replacement filtering 
                     bodyData = bodyData.replace(/(href|src|action)=["']\/\/([^"']+)["']/gi, (match, attr, p1) => {
                         return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent('https://' + p1)}"`;
                     });
@@ -158,7 +156,7 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                         return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(p1)}"`;
                     });
                     
-                    bodyData = bodyData.replace(/(href|src|action)=["'](\/[^/"'][^"']*)["']/gi, (match, attr, p1) => {
+                    bodyData = bodyData.replace(/(href|src|action)=["'](\/(?!\/)[^"']*)["']/gi, (match, attr, p1) => {
                         return `${attr}="${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}"`;
                     });
 
@@ -172,7 +170,7 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
                     bodyData = bodyData.replace(/url\(['"]?(https?:\/\/[^'")]+)['"]?\)/gi, (match, p1) => {
                         return `url("${reqUrl.origin}/?url=${encodeURIComponent(p1)}")`;
                     });
-                    bodyData = bodyData.replace(/url\(['"]?(\/[^/'"][^'")]+)['"]?\)/gi, (match, p1) => {
+                    bodyData = bodyData.replace(/url\(['"]?(\/(?!\/)[^'")]+)['"]?\)/gi, (match, p1) => {
                         return `url("${reqUrl.origin}/?url=${encodeURIComponent(targetUrl.origin + p1)}")`;
                     });
                     bodyData = bodyData.replace(/url\(['"]?(?!(?:https?:\/\/|\/|data:))([^'")]+)['"]?\)/gi, (match, p1) => {
@@ -196,21 +194,19 @@ function handleProxyPipeline(req, res, targetUrlStr, reqUrl) {
             }
         });
 
-        // 3. ENHANCED ERROR HANDLING: Prevent crashes if the target server abruptly drops the connection
         proxyReq.on('error', (err) => {
             if (!res.headersSent) {
                 res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-                res.end(JSON.stringify({ error: "Bad Gateway: Target server refused connection", details: err.message }));
+                res.end(JSON.stringify({ error: "Proxy upstream execution error", details: err.message }));
             }
         });
 
-        // 4. METHOD PROXYING: This line automatically pipes POST/PUT request bodies (like login forms) to the target server
         req.pipe(proxyReq);
 
     } catch (error) {
         if (!res.headersSent) {
             res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-            res.end(JSON.stringify({ error: "Invalid Target URL", details: error.message }));
+            res.end(JSON.stringify({ error: "Bad Target URL Parsing Request", details: error.message }));
         }
     }
 }
